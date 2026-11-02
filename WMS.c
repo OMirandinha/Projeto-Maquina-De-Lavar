@@ -39,7 +39,7 @@ typedef enum {
 } EstadoMenu;
 
 // Programas disponiveis para selecao.
-// Nesta versao, selecionar nao executa a lavagem.
+// A lavagem pesada possui ciclo funcional; os demais mantem o comportamento original.
 typedef enum {
     RAPIDA,
     NORMAL,
@@ -347,6 +347,124 @@ void lavagemNormal(void)
 
 
 // ==================================================
+// CICLO DE LAVAGEM PESADA
+// ==================================================
+
+// Executa uma etapa da lavagem pesada.
+// saidas define quais acionamentos ficam ativos:
+// RB0 = entrada de agua; RB1 = motor; RB2 = drenagem;
+// RB3 = centrifugacao.
+// Retorna 1 se o usuario cancelar pelo botao VOLTAR.
+unsigned char executarEtapaPesada(const char *nomeEtapa,
+                                  unsigned char tempo,
+                                  unsigned char saidas)
+{
+    unsigned char segundo;
+
+    // Atualiza os quatro acionamentos sem alterar os bits RB4 a RB7.
+    PORTBbits.RB0 = (saidas & 0x01) ? 1 : 0;
+    PORTBbits.RB1 = (saidas & 0x02) ? 1 : 0;
+    PORTBbits.RB2 = (saidas & 0x04) ? 1 : 0;
+    PORTBbits.RB3 = (saidas & 0x08) ? 1 : 0;
+
+    mostrarTela(nomeEtapa, "Ciclo pesado");
+
+    // Divide a espera em intervalos de um segundo para
+    // permitir verificar o botao VOLTAR durante a etapa.
+    for (segundo = 0; segundo < tempo; segundo++)
+    {
+        __delay_ms(1000);
+
+        if (BTN_VOLTAR == 0)
+        {
+            __delay_ms(40); // Debounce do botao
+
+            if (BTN_VOLTAR == 0)
+            {
+                // Desliga todos os acionamentos antes de cancelar.
+                PORTBbits.RB0 = 0;
+                PORTBbits.RB1 = 0;
+                PORTBbits.RB2 = 0;
+                PORTBbits.RB3 = 0;
+
+                // Aguarda a liberacao do botao.
+                while (BTN_VOLTAR == 0);
+                __delay_ms(40);
+
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// Executa o ciclo completo de lavagem pesada.
+// Tempos demonstrativos: total de 66 segundos.
+void lavagemPesada(void)
+{
+    // RB0 a RB3 sao saidas; RB4 a RB7 permanecem como entradas.
+    TRISB = 0xF0;
+
+    // Garante que todos os acionamentos comecem desligados.
+    PORTBbits.RB0 = 0;
+    PORTBbits.RB1 = 0;
+    PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
+
+    // Etapa 1: pre-lavagem (motor em funcionamento).
+    if (executarEtapaPesada("Pre-lavagem", 5, 0x02))
+        goto ciclo_cancelado;
+
+    // Etapa 2: enchimento de agua.
+    if (executarEtapaPesada("Enchendo agua", 8, 0x01))
+        goto ciclo_cancelado;
+
+    // Etapa 3: agitacao mais longa para lavagem pesada.
+    if (executarEtapaPesada("Lavagem pesada", 20, 0x02))
+        goto ciclo_cancelado;
+
+    // Etapa 4: retirada da agua.
+    if (executarEtapaPesada("Drenando agua", 8, 0x04))
+        goto ciclo_cancelado;
+
+    // Etapa 5: entrada de agua e movimentacao para enxague.
+    if (executarEtapaPesada("Enxaguando", 10, 0x03))
+        goto ciclo_cancelado;
+
+    // Etapa 6: drenagem junto com a centrifugacao.
+    if (executarEtapaPesada("Centrifugando", 15, 0x0C))
+        goto ciclo_cancelado;
+
+    // Desliga todas as saidas ao concluir o ciclo.
+    PORTBbits.RB0 = 0;
+    PORTBbits.RB1 = 0;
+    PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
+
+    mostrarTela("Ciclo concluido", "Lavagem pesada");
+    __delay_ms(2000);
+
+    estado = MENU_PRINCIPAL;
+    opcao = 0;
+    return;
+
+ciclo_cancelado:
+    // Mantem todas as saidas desligadas em caso de cancelamento.
+    PORTBbits.RB0 = 0;
+    PORTBbits.RB1 = 0;
+    PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
+
+    mostrarTela("Ciclo cancelado", "Voltando menu");
+    __delay_ms(1500);
+
+    estado = MENU_PRINCIPAL;
+    opcao = 0;
+}
+
+
+// ==================================================
 // SELECAO DE PROGRAMAS
 // ==================================================
 
@@ -366,8 +484,12 @@ void confirmarPrograma(void)
             break;
 
         case PESADA:
-            mostrarTela("Selecionado:", "Lavagem pesada");
-            break;
+            // Executa somente a lavagem pesada; as demais opcoes
+            // continuam com o comportamento original do programa.
+            mostrarTela("Iniciando ciclo", "Lavagem pesada");
+            __delay_ms(800);
+            lavagemPesada();
+            return; // Evita sobrescrever a tela ao voltar do ciclo.
 
         case ENXAGUE_CENTRIFUGACAO:
             mostrarTela("Selecionado:", "Enxag+Centrif.");
