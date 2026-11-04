@@ -1,6 +1,5 @@
-
 #include <xc.h>
-
+#include <stdio.h>
 // Frequencia do clock: cristal externo de 20 MHz
 #define _XTAL_FREQ 20000000UL
 
@@ -48,6 +47,30 @@ typedef enum {
     NENHUM_PROGRAMA
 } Programa;
 
+// Struct usado para gestao de tempo.
+// Sempre inicializar com 0 ou com o tempo que deseja chegar
+// typedef void (*TimerCallback)(void);
+
+typedef struct timer {
+    int minutos;
+    int segundos;
+    int ms;
+    unsigned char mostrarTempo; // Variável para controlar a atualização da tela
+    struct timer *max;
+    // TimerCallback callback; // Ponteiro para a função de callback
+
+} Timer;
+
+static Timer limite;
+
+Timer global = {
+    .minutos = 0,
+    .segundos = 0,
+    .ms = 0,
+    .max = NULL,
+    .mostrarTempo = 0 // mostra o tempo restante a cada 5 segundos
+    // .callback = timer_callback
+};
 // Estado atual da interface e programa selecionado.
 EstadoMenu estado = MENU_PRINCIPAL;
 Programa programaSelecionado = NENHUM_PROGRAMA;
@@ -59,25 +82,122 @@ unsigned char opcao = 0;
 unsigned char sair = 0;
 
 
+volatile unsigned char atualizar = 0; // Variável para sinalizar que a tela deve ser atualizada
+
+volatile unsigned char cont5 = 0; // Contador para atualizar a tela a cada 5 segundos
+// ==================================================
+// FUNCOES PROTOTIPO
+// ==================================================
+void mostrarTela(const char *linha1, const char *linha2);
+void mostrarMenuPrincipal(void);
+void mostrarMenuProgramas(void);
+void mostrarConfiguracoes(void);
+void mostrarSobre(void);
+void confirmarPrograma(void);
+
+// ==================================================
+// FUNCOES DE TEMPO
+// ==================================================
+
+// Funcao que desliga o timer e exibe a mensagem de tempo limite atingido.
+volatile unsigned char tempoLimiteAtingido = 0; // Variável para sinalizar que o tempo limite foi atingido
+
+// void timer_callback(void)
+// {
+//     INTCONbits.T0IE = 0; // Desabilita a interrupcao do Timer0
+//     OPTION_REGbits.T0CS = 1;  // Desativa a contagem
+//     tempoLimiteAtingido = 1; // Sinaliza que o tempo limite foi atingido
+// }
+
+
+
+// Interrupcao do Timer0 a cada 10 ms.
+// Chama a função timer_callback quando o tempo limite é atingido.
+void __interrupt() ms10Timer0(void)
+{
+    if (INTCONbits.T0IF) {
+        global.ms += 10;
+        if (global.ms >= 1000) {
+            global.ms = 0;
+            global.segundos++;
+            atualizar = 1; // Sinaliza que a tela deve ser atualizada
+            if (++cont5 >= 5) { cont5 = 0; global.mostrarTempo = !global.mostrarTempo;} // a cada 5 segundos, atualiza a variável mostrarTempo para atualizar a tela
+            if (global.segundos >= 60) {
+                global.segundos = 0;
+                global.minutos++;
+            }
+        }
+        if (global.max != NULL) {
+            if (global.minutos >= global.max->minutos &&
+                global.segundos >= global.max->segundos &&
+                global.ms >= global.max->ms) tempoLimiteAtingido = 1; 
+                // Chama a função de callback quando o tempo limite é atingido 
+                   
+           
+        }
+        
+        INTCONbits.T0IF = 0; // Limpa a flag de interrupcao do Timer0
+        TMR0 = 61; // Reinicia o Timer0
+    }
+}
+
+// Usar somente uma vez para configurar o Timer0 com prescaler 1:256 e interrupcao habilitada.
+void timer0Conf(void)
+{
+    
+    OPTION_REGbits.PSA = 0;  // Prescaler atribuido ao Timer0
+    OPTION_REGbits.PS = 0b111; // Prescaler 1:256
+    OPTION_REGbits.T0SE = 0; // Incrementa na borda de subida
+
+    
+    INTCONbits.GIE = 1; // Habilita interrupcoes globais
+}
+
+// Essa funcao gera um tempo limite para o timer0.
+// O tempo em array time deve ser fornecido em minutos, segundos e milissegundos para transferir para um struct Timer.
+void timerInit(int time[3], Timer *timerStruct) {
+    tempoLimiteAtingido = 0; // Reinicia a variável para o próximo ciclos
+
+    global.minutos = 0;
+    global.segundos = 0;
+    global.ms = 0;
+    global.max = timerStruct;
+
+    timerStruct->minutos = time[0];
+    timerStruct->segundos = time[1];
+    timerStruct->ms = time[2];
+
+    OPTION_REGbits.T0CS = 0; // Timer0 com clock interno 
+    TMR0 = 61;
+    INTCONbits.T0IF = 0; // Limpa a flag de interrupcao do Timer0
+    INTCONbits.T0IE = 1; // Habilita a interrupcao do Timer0
+}
+
+
+
 // ==================================================
 // FUNCOES DE COMUNICACAO COM O LCD
 // ==================================================
 
 // Gera um pulso no pino EN para o LCD receber os dados.
-void lcdPulso(void)
-{
-    LCD_EN = 1;
-    __delay_us(2);
-    LCD_EN = 0;
-    __delay_us(50);
-}
+// void lcdPulso(void)
+// {
+//     LCD_EN = 1;
+//     __delay_us(2);
+//     LCD_EN = 0;
+//     __delay_us(50);
+// }
 
 // Envia os quatro bits mais significativos de um valor.
 // O LCD recebe primeiro a metade superior do byte.
 void lcdNibble(unsigned char valor)
 {
     PORTD = (PORTD & 0x0F) | (valor & 0xF0);
-    lcdPulso();
+    // lcdPulso();
+    LCD_EN = 1;
+    __delay_us(2);
+    LCD_EN = 0;
+    __delay_us(50);
 }
 
 // Envia um comando ao LCD, como limpar a tela ou
@@ -463,6 +583,132 @@ ciclo_cancelado:
     opcao = 0;
 }
 
+int mostrarEtapaCentrif(int time[3], char *etapa, unsigned char saidas)
+{
+    /* Esta funcao executa uma etapa do ciclo de enxague e centrifugacao, controlando os acionamentos e exibindo o tempo restante na tela. Retorna 1 se o usuario cancelar pelo botao VOLTAR.
+       Para usar, forneca um array de 3 inteiros representando minutos, segundos e milissegundos, o nome da etapa e os bits correspondentes aos acionamentos que devem ser ativados.
+    */
+    // Atualiza os quatro acionamentos sem alterar os bits RB4 a RB7.
+    PORTBbits.RB0 = (saidas & 0x01) ? 1 : 0;
+    PORTBbits.RB1 = (saidas & 0x02) ? 1 : 0;
+    PORTBbits.RB2 = (saidas & 0x04) ? 1 : 0;
+    PORTBbits.RB3 = (saidas & 0x08) ? 1 : 0;
+   
+
+    // char buffer1[17];
+    // char buffer[17];
+
+    int repetir = 0;
+
+    timerInit(time, &limite); // Configura o tempo limite
+    mostrarTela(etapa, "Centrifugacao");
+    while (!tempoLimiteAtingido) // Aguarda o tempo limite ou a conclusão da centrifugação
+    {
+        
+        if (atualizar)
+        {
+            if (global.mostrarTempo)
+            {
+                atualizar = 0;
+                repetir = 0;
+                
+                // sprintf(buffer1, "%02d:%02d", global.minutos, global.segundos); 
+                // sprintf(buffer, "%02d:%02d", global.max->minutos, global.max->segundos);// Formata o tempo decorrido em minutos e segundos
+                // mostrarTela(buffer1, buffer);
+                long tempTot = (long)global.max->minutos * 60L + global.max->segundos;
+                long tempAtual = (long)global.minutos * 60L + global.segundos;
+                long tempRestante = (tempTot - tempAtual) < 0 ? 0 : (tempTot - tempAtual); // Garante que o tempo restante não seja negativo
+                unsigned int segundos = (unsigned int)(tempRestante % 60L);
+                unsigned int minutos = (unsigned int)((tempRestante / 60L)%60L);
+                
+                char buffer[6];
+                buffer[0] = '0' + minutos / 10;
+                buffer[1] = '0' + minutos % 10;
+                buffer[2] = ':';
+                buffer[3] = '0' + segundos / 10;
+                buffer[4] = '0' + segundos % 10;
+                buffer[5] = '\0';
+                mostrarTela("Tempo res. (M:S)", buffer);
+            }
+            else if (!repetir)
+            {   
+                atualizar = 0;
+                repetir = 1;
+                mostrarTela(etapa, "Centrifugacao"); // Aguarda um curto período antes de verificar novamente
+            }
+            
+        }
+        
+         if (BTN_VOLTAR == 0)
+        {
+            __delay_ms(40); // Debounce do botao
+
+            if (BTN_VOLTAR == 0)
+            {
+                // Desliga todos os acionamentos antes de cancelar.
+                PORTBbits.RB0 = 0;
+                PORTBbits.RB1 = 0;
+                PORTBbits.RB2 = 0;
+                PORTBbits.RB3 = 0;
+
+                // Aguarda a liberacao do botao.
+                while (BTN_VOLTAR == 0);
+                __delay_ms(40);
+
+                return 1;
+            }
+        }
+       
+    }
+    INTCONbits.T0IE = 0; // Desabilita a interrupcao do Timer0
+    OPTION_REGbits.T0CS = 1;  // Desativa a contagem
+    
+    return 0;
+   
+}
+void lavagemCentrifugacao(void) 
+{
+    TRISB = 0xF0; // RB0 a RB3 sao saidas; RB4 a RB7 permanecem como entradas.
+    PORTB = 0x00; // Garante que todos os acionamentos comecem desligados.
+    // Em producao  
+    if (mostrarEtapaCentrif((int[3]){3, 0, 0}, "Drenando agua", 0x02)) goto ciclo_cancelado;  
+    if (mostrarEtapaCentrif((int[3]){1, 30, 0}, "Distribuindo", 0x01)) goto ciclo_cancelado;
+    if (mostrarEtapaCentrif((int[3]){8, 0, 0}, "Centrifugando", 0x02)) goto ciclo_cancelado;
+    if (mostrarEtapaCentrif((int[3]){0, 30, 0}, "Parando tambor", 0x04)) goto ciclo_cancelado;
+
+    // Em demonstracao, para nao demorar muito tempo
+    // if (mostrarEtapaCentrif((int[3]){0, 10, 0}, "Drenando agua", 0x02)) goto ciclo_cancelado;  
+    // if (mostrarEtapaCentrif((int[3]){0, 10, 0}, "Distribuindo", 0x01)) goto ciclo_cancelado;
+    // if (mostrarEtapaCentrif((int[3]){0, 10, 0}, "Centrifugando", 0x02)) goto ciclo_cancelado;
+    // if (mostrarEtapaCentrif((int[3]){0, 10, 0}, "Parando tambor", 0x04)) goto ciclo_cancelado;
+
+    // Desliga todas as saidas ao concluir o ciclo.
+    PORTBbits.RB0 = 0;
+    PORTBbits.RB1 = 0;
+    PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
+
+    mostrarTela("Ciclo concluido", "Centrifugacao");
+    __delay_ms(1500);
+
+    estado = MENU_PRINCIPAL;
+    opcao = 0;
+    return;
+
+    ciclo_cancelado:
+    // Mantem todas as saidas desligadas em caso de cancelamento.
+    PORTBbits.RB0 = 0;
+    PORTBbits.RB1 = 0;
+    PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
+
+    mostrarTela("Ciclo cancelado", "Voltando menu");
+    __delay_ms(1500);
+
+    estado = MENU_PRINCIPAL;
+    opcao = 0;
+}
+
 
 // ==================================================
 // SELECAO DE PROGRAMAS
@@ -493,6 +739,8 @@ void confirmarPrograma(void)
 
         case ENXAGUE_CENTRIFUGACAO:
             mostrarTela("Selecionado:", "Enxag+Centrif.");
+            __delay_ms(800);
+            lavagemCentrifugacao();
             break;
 
         default:
@@ -556,6 +804,9 @@ void main(void)
     // Inicializa o LCD e apresenta a primeira tela.
     lcdInicializar();
     atualizarTela();
+    
+    // Inicializa a configuração do timer 0
+    timer0Conf(); 
 
     // Mantem a interface ativa ate selecionar "Sair".
     while (!sair) {
