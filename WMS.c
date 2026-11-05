@@ -587,20 +587,20 @@ ciclo_cancelado:
 // CICLO DE LAVAGEM CENTRIFUGACAO
 // ==================================================
 
-// Executa uma etapa da lavagem centrifugacao.
-// saidas define quais acionamentos ficam ativos:
-// RB0 = motor; RB1 = drenagem; RB2 = centrifugacao.
-// Retorna 1 se o usuario cancelar pelo botao VOLTAR.
+// Executa um ciclo de lavagem de centrifugacao.
+// RB1 = motor de lavagem;
+// RB2 = bomba de drenagem; RB3 = acionamento da centrifugacao.
+// Os tempos abaixo sao valores demonstrativos em segundos.
 
 int mostrarEtapaCentrif(int time[3], char *etapa, unsigned char saidas)
 {
     /* Esta funcao executa uma etapa do ciclo de enxague e centrifugacao, controlando os acionamentos e exibindo o tempo restante na tela. Retorna 1 se o usuario cancelar pelo botao VOLTAR.
        Para usar, forneca um array de 3 inteiros representando minutos, segundos e milissegundos, o nome da etapa e os bits correspondentes aos acionamentos que devem ser ativados.
     */
-    // Atualiza os quatro acionamentos sem alterar os bits RB3 a RB7.
-    PORTBbits.RB0 = (saidas & 0x01) ? 1 : 0;
-    PORTBbits.RB1 = (saidas & 0x02) ? 1 : 0;
-    PORTBbits.RB2 = (saidas & 0x04) ? 1 : 0;
+    // Atualiza os tres acionamentos sem alterar os bits RB4 a RB7.
+    PORTBbits.RB1 = (saidas & 0x01) ? 1 : 0;
+    PORTBbits.RB2 = (saidas & 0x02) ? 1 : 0;
+    PORTBbits.RB3 = (saidas & 0x04) ? 1 : 0;
 
    
 
@@ -655,10 +655,9 @@ int mostrarEtapaCentrif(int time[3], char *etapa, unsigned char saidas)
             if (BTN_VOLTAR == 0)
             {
                 // Desliga todos os acionamentos antes de cancelar.
-                PORTBbits.RB0 = 0;
                 PORTBbits.RB1 = 0;
                 PORTBbits.RB2 = 0;
-                
+                PORTBbits.RB3 = 0;
 
                 // Aguarda a liberacao do botao.
                 while (BTN_VOLTAR == 0);
@@ -677,7 +676,8 @@ int mostrarEtapaCentrif(int time[3], char *etapa, unsigned char saidas)
 }
 void lavagemCentrifugacao(void) 
 {
-    TRISB = 0xF8; // RB0 a RB2 sao saidas; RB3 a RB7 permanecem como entradas.
+    // Configura RB0 a RB3 como saidas e inicia tudo desligado.
+    TRISB = 0xF0;
     PORTB = 0x00; // Garante que todos os acionamentos comecem desligados.
     // Em producao  
     // if (mostrarEtapaCentrif((int[3]){3, 0, 0}, "Drenando agua", 0x02)) goto ciclo_cancelado;  
@@ -692,9 +692,9 @@ void lavagemCentrifugacao(void)
     if (mostrarEtapaCentrif((int[3]){0, 10, 0}, "Parando tambor", 0x01)) goto ciclo_cancelado; // Motor
 
     // Desliga todas as saidas ao concluir o ciclo.
-    PORTBbits.RB0 = 0;
     PORTBbits.RB1 = 0;
     PORTBbits.RB2 = 0;
+    PORTBbits.RB3 = 0;
 
     mostrarTela("Ciclo concluido", "Centrifugacao");
     __delay_ms(1500);
@@ -705,10 +705,10 @@ void lavagemCentrifugacao(void)
 
     ciclo_cancelado:
     // Mantem todas as saidas desligadas em caso de cancelamento.
-    PORTBbits.RB0 = 0;
+    
     PORTBbits.RB1 = 0;
     PORTBbits.RB2 = 0;
-
+    PORTBbits.RB3 = 0;
     mostrarTela("Ciclo cancelado", "Voltando menu");
     __delay_ms(1500);
 
@@ -730,10 +730,14 @@ void confirmarPrograma(void)
     switch (programaSelecionado) {
         case RAPIDA:
             mostrarTela("Selecionado:", "Lavagem rapida");
+            __delay_ms(800);
+            lavagemRapida();
             break;
 
         case NORMAL:
             mostrarTela("Selecionado:", "Lavagem normal");
+            __delay_ms(800);
+            lavagemNormal();
             break;
 
         case PESADA:
